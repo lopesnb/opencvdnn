@@ -1,0 +1,1 @@
+/usr/bin/g++ -g CMakeFiles/opencv_dnn.dir/main.cpp.o -o opencv_dnn 
