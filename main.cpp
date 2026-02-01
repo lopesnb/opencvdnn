@@ -1,54 +1,70 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/dnn.hpp>
 #include <iostream>
+#include <vector>
 
 int main() {
-    // 1. 学習済みモデルの読み込み（知能をロード）
-   // auto net = cv::dnn::readNetFromCaffe("deploy.prototxt", "res10_300x300_ssd_iter_140000.caffemodel");
+    // 1. モデルの読み込み (ONNX形式)
     auto net = cv::dnn::readNetFromONNX("best.onnx");
-//追加開始-------------------------------------------------------
-//CUDAバックエンド（GPU）を使用する設定
-//    net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-//    net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
-//追加終了-------------------------------------------------------
+    
+    // GPUが使える場合は高速化 (任意)
+    // net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+    // net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
 
     cv::VideoCapture cap(0); // カメラ開始
     cv::Mat frame;
 
     while (cap.read(frame)) {
-        // 2. 画像をAIが読める形式（Blob）に変換
-        cv::Mat blob = cv::dnn::blobFromImage(frame, 1.0/255.0, cv::Size(640, 640), cv::Scalar(0, 0, 0));
+        // 2. 画像をAIが読める形式(640x640)に変換
+        cv::Mat blob = cv::dnn::blobFromImage(frame, 1.0/255.0, cv::Size(640, 640), cv::Scalar(0,0,0), true, false);
         net.setInput(blob);
 
-        // 3. 推論（Playgroundでいう「Playボタン」実行）
-        cv::Mat detection = net.forward();
+        // 3. 推論実行
+        std::vector<cv::Mat> outputs;
+        net.forward(outputs, net.getUnconnectedOutLayersNames());
 
-        // 4. 結果の表示（確率が高いものに枠を描く）
-        // (ここに数行、枠を描画する処理が入ります)
-// --- ここから追加：検出結果を解析して枠を描く ---
-        cv::Mat detectionMat(detection.size[2], detection.size[3], CV_32F, detection.ptr<float>());
+        // 4. 後処理 (ここが昨日と違う重要な部分！)
+        cv::Mat output = outputs[0];
+        // YOLOv11の出力形式は [1, 5, 8400] (中心x, 中心y, 幅, 高さ, スコア)
+        output = output.reshape(1, output.size[1]);
+        cv::transpose(output, output); // [8400, 5] に変換
 
-        for (int i = 0; i < detectionMat.rows; i++) {
-            float confidence = detectionMat.at<float>(i, 2);
+        std::vector<float> confidences;
+        std::vector<cv::Rect> boxes;
+        float x_factor = frame.cols / 640.0;
+        float y_factor = frame.rows / 640.0;
 
-            if (confidence > 0.5) { // 50%以上の確信度があれば表示
-                // 座標を計算（0.0~1.0の割合で返ってくるので、画像のピクセルサイズに直す）
-                int x1 = static_cast<int>(detectionMat.at<float>(i, 3) * frame.cols);
-                int y1 = static_cast<int>(detectionMat.at<float>(i, 4) * frame.rows);
-                int x2 = static_cast<int>(detectionMat.at<float>(i, 5) * frame.cols);
-                int y2 = static_cast<int>(detectionMat.at<float>(i, 6) * frame.rows);
+        for (int i = 0; i < output.rows; ++i) {
+            float confidence = output.at<float>(i, 4); // 5番目がスコア
+            if (confidence > 0.5) { // 信頼度50%以上
+                float x = output.at<float>(i, 0);
+                float y = output.at<float>(i, 1);
+                float w = output.at<float>(i, 2);
+                float h = output.at<float>(i, 3);
 
-                // 枠を描画（緑色、太さ2）
-                cv::rectangle(frame, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 2);
-                
-                // 確率も文字で出してみる
-                std::string label = cv::format("Log: %.2f", confidence);
-                cv::putText(frame, label, cv::Point(x1, y1 - 10), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0));
+                int left = int((x - 0.5 * w) * x_factor);
+                int top = int((y - 0.5 * h) * y_factor);
+                int width = int(w * x_factor);
+                int height = int(h * y_factor);
+
+                boxes.push_back(cv::Rect(left, top, width, height));
+                confidences.push_back(confidence);
             }
         }
-        // --- ここまで追加 ---        
-        cv::imshow("AI Detection", frame);
-        if (cv::waitKey(1) == 'q') break;
+
+        // 重なった枠を一つにまとめる(NMS処理)
+        std::vector<int> indices;
+        cv::dnn::NMSBoxes(boxes, confidences, 0.5, 0.4, indices);
+
+        for (int idx : indices) {
+            cv::rectangle(frame, boxes[idx], cv::Scalar(0, 255, 0), 2);
+            cv::putText(frame, "Log: " + std::to_string(confidences[idx]), 
+                        cv::Point(boxes[idx].x, boxes[idx].y - 5), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
+        }
+
+        cv::imshow("Log Detection", frame);
+        if (cv::waitKey(1) >= 0) break;
     }
     return 0;
 }
