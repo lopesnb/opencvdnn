@@ -49,6 +49,7 @@ int main() {
 
                 boxes.push_back(cv::Rect(left, top, width, height));
                 confidences.push_back(confidence);
+                
             }
         }
 
@@ -61,6 +62,39 @@ int main() {
             cv::putText(frame, "Log: " + std::to_string(confidences[idx]), 
                         cv::Point(boxes[idx].x, boxes[idx].y - 5), 
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
+
+
+
+            for (int idx : indices) {
+                // 1. AIの枠を描画
+                cv::rectangle(frame, boxes[idx], cv::Scalar(0, 255, 0), 2);
+
+                // --- GrabCut セクション ---
+                cv::Rect roi = boxes[idx];
+    
+                // 枠が画像の外にはみ出さないようにガード（これがないとエラーで落ちることがあります）
+                roi &= cv::Rect(0, 0, frame.cols, frame.rows);
+
+                if (roi.width > 0 && roi.height > 0) {
+                    cv::Mat mask, bgdModel, fgdModel;
+                    // 回数を 1~2 に減らすと少し速くなります
+                    cv::grabCut(frame, mask, roi, bgdModel, fgdModel, 2, cv::GC_INIT_WITH_RECT);
+
+                    // 木の部分（確実+おそらく）を抽出
+                    // GC_PR_FGD(3) か GC_FGD(1) のピクセルを白(255)にする
+                    cv::Mat binMask;
+                    binMask = (mask == cv::GC_PR_FGD) | (mask == cv::GC_FGD);
+                   
+
+                    // 確認用に、枠の中の「木」と判定された部分だけ色を変えてみる（例：赤く塗る）
+                    cv::Mat logRegion = frame(roi);
+                    logRegion.setTo(cv::Scalar(0, 0, 255), binMask(roi)); 
+        
+                    // --- ここで楕円フィッティングへ繋げる ---
+                    // binMaskの中の白い点群を使って fitEllipse を呼ぶ
+                }
+            }
+
         }
 
         cv::imshow("Log Detection", frame);
